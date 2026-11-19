@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: playbank-simulator
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Dán chuỗi PostgreSQL miễn phí (Neon.tech hoặc Supabase.com — không cần thẻ) vào đây
+      # Nếu để trống, server tự dùng SQLite cục bộ (dữ liệu sẽ reset khi Render sleep/redeploy)
+      - key: DATABASE_URL
+        sync: false

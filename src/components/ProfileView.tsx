@@ -359,7 +359,7 @@ export function ProfileView({
             Bảo mật & Minh bạch PLAYBANK
           </div>
           <p className="mt-1">
-            Mật khẩu được băm bằng thuật toán <span className="font-mono">scrypt</span> kèm muối ngẫu nhiên phía máy chủ. Mọi lệnh chuyển PLAYCOIN được xác thực số dư và thực thi atomic trên cơ sở dữ liệu máy chủ cùng khóa chống trùng lặp giao dịch. Số dư không thể bị thay đổi từ trình duyệt và hoàn toàn không liên quan đến tiền thật.
+            Mật khẩu được băm bằng thuật toán <span className="font-mono">scrypt</span> kèm muối ngẫu nhiên phía máy chủ. Mọi lệnh chuyển PLAYCOIN được xác thực số dư và thực thi atomic trên backend (hỗ trợ SQLite cục bộ hoặc PostgreSQL miễn phí qua <span className="font-mono">DATABASE_URL</span>, không cần bật Cloud Billing) cùng khóa chống trùng lặp giao dịch. Số dư không thể bị sửa từ trình duyệt và hoàn toàn không liên quan đến tiền thật.
           </p>
         </div>
       </div>

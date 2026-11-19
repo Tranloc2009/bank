@@ -1,21 +1,29 @@
+import 'dotenv/config';
 import path from 'node:path';
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { createServer as createViteServer } from 'vite';
-import { BankEngine, BankError } from './server/bankEngine.ts';
+import { BankEngine } from './server/bankEngine.ts';
+import { PgBankEngine } from './server/pgBankEngine.ts';
+import { BankError } from './server/security.ts';
+import type { IBankEngine } from './server/bankTypes.ts';
 import type { UserProfile } from './src/lib/banking.ts';
 
-declare global {
-  namespace Express {
-    interface Request {
-      user?: UserProfile;
-      authToken?: string;
-    }
-  }
+interface AuthenticatedRequest extends Request {
+  user?: UserProfile;
+  authToken?: string;
 }
 
 const PORT = Number(process.env.PORT || 3000);
+const DATABASE_URL = (process.env.DATABASE_URL || '').trim();
 const DB_PATH = process.env.PLAYBANK_DB_PATH || path.resolve(process.cwd(), 'playbank.db');
-const engine = new BankEngine(DB_PATH);
+
+function createBankEngine(): IBankEngine {
+  if (DATABASE_URL) {
+    return new PgBankEngine(DATABASE_URL);
+  }
+  return new BankEngine(DB_PATH);
+}
+
+const engine: IBankEngine = createBankEngine();
 
 // Real-time Server-Sent Events hub keyed by userId
 const sseClients = new Map<string, Set<Response>>();
@@ -44,10 +52,10 @@ function extractBearerToken(req: Request): string | undefined {
   return undefined;
 }
 
-function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+async function requireAuth(req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> {
   try {
     const token = extractBearerToken(req);
-    const user = engine.authenticate(token);
+    const user = await engine.authenticate(token);
     req.user = user;
     req.authToken = token;
     next();
@@ -57,39 +65,47 @@ function requireAuth(req: Request, _res: Response, next: NextFunction): void {
 }
 
 async function startServer(): Promise<void> {
+  if (engine.init) {
+    await engine.init();
+  }
+
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  // Health endpoint
+  // Health endpoint (exposes only non-sensitive operational info)
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'playbank-simulator' });
+    res.json({
+      ok: true,
+      service: 'playbank-simulator',
+      storage: engine.storageType,
+    });
   });
 
   // Auth routes
-  app.post('/api/auth/register', (req, res, next) => {
+  app.post('/api/auth/register', async (req, res, next) => {
     try {
       const { email, password, displayName } = req.body ?? {};
-      const result = engine.register({ email, password, displayName });
+      const result = await engine.register({ email, password, displayName });
       res.status(201).json(result);
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/api/auth/login', (req, res, next) => {
+  app.post('/api/auth/login', async (req, res, next) => {
     try {
       const { email, password } = req.body ?? {};
-      const result = engine.login({ email, password });
+      const result = await engine.login({ email, password });
       res.json(result);
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/api/auth/logout', requireAuth, (req, res, next) => {
+  app.post('/api/auth/logout', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       if (req.authToken) {
-        engine.logout(req.authToken);
+        await engine.logout(req.authToken);
       }
       res.json({ ok: true });
     } catch (err) {
@@ -98,23 +114,30 @@ async function startServer(): Promise<void> {
   });
 
   // Dashboard & Profile
-  app.get('/api/me', requireAuth, (req, res, next) => {
+  app.get('/api/me', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
-      const summary = engine.getDashboardSummary(req.user!.id);
+      const summary = await engine.getDashboardSummary(req.user!.id);
       res.json(summary);
     } catch (err) {
       next(err);
     }
   });
 
-  app.patch('/api/me/profile', requireAuth, (req, res, next) => {
+  app.patch('/api/me/profile', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       const { displayName, avatarUrl, isAnonymous, soundEnabled } = req.body ?? {};
       // Security: never accept balance or accountNumber mutations from client
-      if (req.body && ('balance' in req.body || 'accountNumber' in req.body || 'initialBonusGranted' in req.body)) {
-        throw new BankError('Không được phép chỉnh sửa số dư hoặc số tài khoản trực tiếp.', 403, 'FORBIDDEN_FIELD');
+      if (
+        req.body &&
+        ('balance' in req.body || 'accountNumber' in req.body || 'initialBonusGranted' in req.body)
+      ) {
+        throw new BankError(
+          'Không được phép chỉnh sửa số dư hoặc số tài khoản trực tiếp.',
+          403,
+          'FORBIDDEN_FIELD'
+        );
       }
-      const user = engine.updateProfile(req.user!.id, {
+      const user = await engine.updateProfile(req.user!.id, {
         displayName,
         avatarUrl,
         isAnonymous,
@@ -127,10 +150,10 @@ async function startServer(): Promise<void> {
   });
 
   // Account lookup (recipient resolution)
-  app.get('/api/accounts/lookup', requireAuth, (req, res, next) => {
+  app.get('/api/accounts/lookup', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       const accountNumber = String(req.query.accountNumber ?? '');
-      const result = engine.lookupAccount(req.user!.id, accountNumber);
+      const result = await engine.lookupAccount(req.user!.id, accountNumber);
       res.json(result);
     } catch (err) {
       next(err);
@@ -138,11 +161,11 @@ async function startServer(): Promise<void> {
   });
 
   // Atomic Transfer
-  app.post('/api/transfers', requireAuth, (req, res, next) => {
+  app.post('/api/transfers', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       const { recipientAccount, amount, note, method, idempotencyKey } = req.body ?? {};
       const parsedAmount = typeof amount === 'number' ? amount : Number(amount);
-      const result = engine.executeTransfer({
+      const result = await engine.executeTransfer({
         senderId: req.user!.id,
         recipientAccount: String(recipientAccount ?? ''),
         amount: parsedAmount,
@@ -171,7 +194,7 @@ async function startServer(): Promise<void> {
   });
 
   // Transaction History with search and date filtering
-  app.get('/api/transactions', requireAuth, (req, res, next) => {
+  app.get('/api/transactions', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       const q = typeof req.query.q === 'string' ? req.query.q : undefined;
       const directionParam = typeof req.query.direction === 'string' ? req.query.direction : 'all';
@@ -179,7 +202,7 @@ async function startServer(): Promise<void> {
         directionParam === 'sent' || directionParam === 'received' ? directionParam : 'all';
       const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
       const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
-      const transactions = engine.getTransactions(req.user!.id, {
+      const transactions = await engine.getTransactions(req.user!.id, {
         q,
         direction,
         fromDate,
@@ -192,9 +215,9 @@ async function startServer(): Promise<void> {
   });
 
   // Leaderboard
-  app.get('/api/leaderboard', requireAuth, (req, res, next) => {
+  app.get('/api/leaderboard', requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
-      const entries = engine.getLeaderboard(req.user!.id);
+      const entries = await engine.getLeaderboard(req.user!.id);
       res.json({ entries });
     } catch (err) {
       next(err);
@@ -202,7 +225,7 @@ async function startServer(): Promise<void> {
   });
 
   // Real-time Server-Sent Events stream
-  app.get('/api/events', requireAuth, (req, res) => {
+  app.get('/api/events', requireAuth, (req: AuthenticatedRequest, res) => {
     const userId = req.user!.id;
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -247,6 +270,7 @@ async function startServer(): Promise<void> {
 
   // Vite dev middleware or production static assets
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -261,7 +285,9 @@ async function startServer(): Promise<void> {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`PLAYBANK Simulator running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `PLAYBANK Simulator running on http://0.0.0.0:${PORT} (storage: ${engine.storageType})`
+    );
   });
 }
 

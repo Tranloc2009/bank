@@ -84,9 +84,39 @@ export default function App() {
     soundEnabledRef.current = summary?.user.soundEnabled ?? true;
   }, [summary?.user.soundEnabled]);
 
-  const refreshDashboard = useCallback(async () => {
+  const seenIncomingIdsRef = useRef<Set<string>>(new Set());
+  const hasHydratedIncomingRef = useRef(false);
+
+  const refreshDashboard = useCallback(async (detectIncoming = false) => {
     try {
       const data = await playbankApi.getMe();
+      const incomingTxs = data.recentTransactions.filter(
+        (tx) => tx.recipientId === data.user.id
+      );
+
+      if (detectIncoming && hasHydratedIncomingRef.current) {
+        const newlyReceived = incomingTxs.filter(
+          (tx) => !seenIncomingIdsRef.current.has(tx.id)
+        );
+        if (newlyReceived.length > 0) {
+          if (soundEnabledRef.current) {
+            playBankingSound('incoming');
+          }
+          setIncomingAlerts((prev) => {
+            const existing = new Set(prev.map((a) => a.id));
+            const additions = newlyReceived
+              .filter((tx) => !existing.has(tx.id))
+              .map((tx) => ({ id: tx.id, tx }));
+            return [...additions, ...prev].slice(0, 3);
+          });
+        }
+      }
+
+      for (const tx of incomingTxs) {
+        seenIncomingIdsRef.current.add(tx.id);
+      }
+      hasHydratedIncomingRef.current = true;
+
       setSummary(data);
     } catch {
       setStoredToken(null);
@@ -101,29 +131,43 @@ export default function App() {
       setBootstrapping(false);
       return;
     }
-    refreshDashboard().finally(() => setBootstrapping(false));
+    refreshDashboard(false).finally(() => setBootstrapping(false));
   }, [refreshDashboard]);
 
-  // Real-time incoming payment notifications (SSE + light fallback sync on window focus)
+  // Real-time incoming payment notifications (SSE + free-host safe polling fallback)
   useEffect(() => {
     if (!summary?.user.id) return;
 
     const unsubscribe = playbankApi.subscribeEvents(({ transaction }) => {
-      if (soundEnabledRef.current) {
-        playBankingSound('incoming');
+      if (!seenIncomingIdsRef.current.has(transaction.id)) {
+        seenIncomingIdsRef.current.add(transaction.id);
+        if (soundEnabledRef.current) {
+          playBankingSound('incoming');
+        }
+        setIncomingAlerts((prev) => {
+          if (prev.some((a) => a.id === transaction.id)) return prev;
+          return [{ id: transaction.id, tx: transaction }, ...prev].slice(0, 3);
+        });
       }
-      setIncomingAlerts((prev) => [{ id: transaction.id, tx: transaction }, ...prev].slice(0, 3));
-      refreshDashboard();
+      refreshDashboard(false);
     });
 
     const onFocus = () => {
-      refreshDashboard();
+      refreshDashboard(true);
     };
     window.addEventListener('focus', onFocus);
+
+    // Lightweight 12s visible-tab fallback in case a free hosting proxy closes idle SSE streams
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshDashboard(true);
+      }
+    }, 12_000);
 
     return () => {
       unsubscribe();
       window.removeEventListener('focus', onFocus);
+      window.clearInterval(pollTimer);
     };
   }, [summary?.user.id, refreshDashboard]);
 
@@ -134,6 +178,8 @@ export default function App() {
 
   const handleLogout = async () => {
     await playbankApi.logout();
+    seenIncomingIdsRef.current.clear();
+    hasHydratedIncomingRef.current = false;
     setSummary(null);
     setIncomingAlerts([]);
     setSelectedReceipt(null);

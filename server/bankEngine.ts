@@ -13,17 +13,18 @@ import {
   type TransferMethod,
   type UserProfile,
 } from '../src/lib/banking.ts';
+import type { IBankEngine } from './bankTypes.ts';
+import {
+  BankError,
+  generateCandidateAccountNumber,
+  generateSessionToken,
+  generateTxCode,
+  hashPassword,
+  hashToken,
+  verifyPassword,
+} from './security.ts';
 
-export class BankError extends Error {
-  status: number;
-  code: string;
-
-  constructor(message: string, status = 400, code = 'BAD_REQUEST') {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
+export { BankError };
 
 interface UserRow {
   id: string;
@@ -63,26 +64,6 @@ interface AchievementRow {
   title: string;
   description: string;
   unlocked_at: string;
-}
-
-function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `scrypt$${salt}$${derived}`;
-}
-
-function verifyPassword(password: string, storedHash: string): boolean {
-  const parts = storedHash.split('$');
-  if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
-  const [, salt, hashHex] = parts;
-  const derived = crypto.scryptSync(password, salt, 64);
-  const storedBuf = Buffer.from(hashHex, 'hex');
-  if (derived.length !== storedBuf.length) return false;
-  return crypto.timingSafeEqual(derived, storedBuf);
-}
-
-function hashToken(rawToken: string): string {
-  return crypto.createHash('sha256').update(rawToken).digest('hex');
 }
 
 function mapUserRow(row: UserRow): UserProfile {
@@ -128,7 +109,8 @@ function mapAchievementRow(row: AchievementRow): AchievementRecord {
   };
 }
 
-export class BankEngine {
+export class BankEngine implements IBankEngine {
+  readonly storageType = 'sqlite' as const;
   private db: Database.Database;
 
   constructor(dbPath: string, options?: { seedDemoUsers?: boolean }) {
@@ -205,8 +187,7 @@ export class BankEngine {
   private generateUniqueAccountNumber(): string {
     const checkStmt = this.db.prepare('SELECT 1 FROM users WHERE account_number = ?');
     for (let attempt = 0; attempt < 30; attempt++) {
-      const randomSix = crypto.randomInt(100000, 999999);
-      const candidate = `8801${randomSix}`;
+      const candidate = generateCandidateAccountNumber();
       if (!checkStmt.get(candidate)) {
         return candidate;
       }
@@ -215,16 +196,11 @@ export class BankEngine {
   }
 
   private generateTxCode(): string {
-    const now = new Date();
-    const y = String(now.getFullYear()).slice(-2);
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    const rand = crypto.randomBytes(3).toString('hex').toUpperCase();
-    return `PB${y}${m}${d}-${rand}`;
+    return generateTxCode();
   }
 
   private createSession(userId: string): string {
-    const rawToken = crypto.randomBytes(32).toString('hex');
+    const rawToken = generateSessionToken();
     const tokenHash = hashToken(rawToken);
     const now = new Date();
     const expires = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
