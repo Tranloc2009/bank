@@ -156,7 +156,8 @@ export const playbankApi = {
   },
 
   subscribeEvents(
-    onIncomingTransfer: (payload: { transaction: TransactionRecord; newBalance: number }) => void
+    onIncomingTransfer: (payload: { transaction: TransactionRecord; newBalance: number }) => void,
+    onPollingMode?: () => void
   ): () => void {
     const token = getStoredToken();
     if (!token || typeof EventSource === 'undefined') {
@@ -165,6 +166,20 @@ export const playbankApi = {
 
     const url = `/api/events?token=${encodeURIComponent(token)}`;
     const es = new EventSource(url);
+
+    es.addEventListener('connected', (event) => {
+      try {
+        const parsed = JSON.parse((event as MessageEvent).data);
+        if (parsed?.mode === 'polling') {
+          // Cloudflare Workers Free uses stateless isolates; close SSE cleanly
+          // and rely on lightweight active-tab sync instead of reconnect spam.
+          es.close();
+          onPollingMode?.();
+        }
+      } catch {
+        // Ignore malformed handshake
+      }
+    });
 
     es.addEventListener('incoming_transfer', (event) => {
       try {

@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "playbank-simulator",
+  "main": "worker/index.ts",
+  "compatibility_date": "2025-04-01",
+  "observability": {
+    "enabled": true
+  },
+  // Phục vụ ứng dụng React + Vite (thư mục dist) trực tiếp trên Cloudflare Workers Free
+  // Tất cả yêu cầu /api/* đi qua Worker backend trước; các route còn lại fallback về index.html
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // Cloudflare D1 Database (gói Free: 5GB lưu trữ, 5 triệu lượt đọc/ngày — không cần thẻ)
+  // Thay "REPLACE_WITH_YOUR_D1_DATABASE_ID" bằng database_id nhận được khi chạy:
+  // npx wrangler d1 create playbank-db
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "playbank-db",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

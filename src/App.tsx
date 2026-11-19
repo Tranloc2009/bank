@@ -134,40 +134,54 @@ export default function App() {
     refreshDashboard(false).finally(() => setBootstrapping(false));
   }, [refreshDashboard]);
 
-  // Real-time incoming payment notifications (SSE + free-host safe polling fallback)
+  // Real-time incoming payment notifications (SSE on Node + smart 5s active-tab sync on Cloudflare Workers Free)
   useEffect(() => {
     if (!summary?.user.id) return;
 
-    const unsubscribe = playbankApi.subscribeEvents(({ transaction }) => {
-      if (!seenIncomingIdsRef.current.has(transaction.id)) {
-        seenIncomingIdsRef.current.add(transaction.id);
-        if (soundEnabledRef.current) {
-          playBankingSound('incoming');
-        }
-        setIncomingAlerts((prev) => {
-          if (prev.some((a) => a.id === transaction.id)) return prev;
-          return [{ id: transaction.id, tx: transaction }, ...prev].slice(0, 3);
-        });
+    let pollTimer: number | null = null;
+    const schedulePolling = (intervalMs: number) => {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
       }
-      refreshDashboard(false);
-    });
+      pollTimer = window.setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          refreshDashboard(true);
+        }
+      }, intervalMs);
+    };
+
+    schedulePolling(12_000);
+
+    const unsubscribe = playbankApi.subscribeEvents(
+      ({ transaction }) => {
+        if (!seenIncomingIdsRef.current.has(transaction.id)) {
+          seenIncomingIdsRef.current.add(transaction.id);
+          if (soundEnabledRef.current) {
+            playBankingSound('incoming');
+          }
+          setIncomingAlerts((prev) => {
+            if (prev.some((a) => a.id === transaction.id)) return prev;
+            return [{ id: transaction.id, tx: transaction }, ...prev].slice(0, 3);
+          });
+        }
+        refreshDashboard(false);
+      },
+      () => {
+        schedulePolling(5_000);
+      }
+    );
 
     const onFocus = () => {
       refreshDashboard(true);
     };
     window.addEventListener('focus', onFocus);
 
-    // Lightweight 12s visible-tab fallback in case a free hosting proxy closes idle SSE streams
-    const pollTimer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        refreshDashboard(true);
-      }
-    }, 12_000);
-
     return () => {
       unsubscribe();
       window.removeEventListener('focus', onFocus);
-      window.clearInterval(pollTimer);
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
     };
   }, [summary?.user.id, refreshDashboard]);
 
