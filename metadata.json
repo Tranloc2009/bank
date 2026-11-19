@@ -1,0 +1,6 @@
+{
+  "name": "PLAYBANK — Ngân Hàng Giả Lập",
+  "description": "Nền tảng trò chơi mô phỏng ngân hàng số trực tuyến với tài khoản riêng, chuyển tiền ảo PLAYCOIN qua số tài khoản hoặc mã QR nội bộ, đồng bộ nhiều người chơi theo thời gian thực.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
